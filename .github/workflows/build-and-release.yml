@@ -1,0 +1,69 @@
+
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-and-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    if: "!contains(github.event.head_commit.message, 'chore: bump build version to')"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository and private submodules
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GRAPHDLC_REPO_TOKEN }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set package version
+        id: version
+        run: |
+          YEAR=$(date -u +%Y)
+          MONTH=$(date -u +%-m)
+          DAY=$(date -u +%-d)
+          SECONDS_OF_DAY=$((10#$(date -u +%H) * 3600 + 10#$(date -u +%M) * 60 + 10#$(date -u +%S)))
+
+          VERSION="${YEAR}.${MONTH}.${DAY}.${SECONDS_OF_DAY}"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Setting package.json version to $VERSION"
+
+          jq --arg version "$VERSION" \
+            '.version = $version' package.json > package.json.tmp
+          mv package.json.tmp package.json
+
+      - name: Commit version update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add package.json
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: bump build version to ${{ steps.version.outputs.version }}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun i
+
+      - name: Build
+        run: bun run build
+
+      - name: Release Firefox
+        run: bun run release:firefox
