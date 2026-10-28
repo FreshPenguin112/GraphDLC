@@ -80,8 +80,7 @@ jobs:
             find . -type f -name '*.xpi' >&2
             exit 1
           fi
-
-          echo "file=$(realpath "${files[0]}")" >> "$GITHUB_OUTPUT"
+          mv $(realpath "${files[0]}") ./dist/firefox-dist.xpi
 
       - name: Get Release Metadata
         id: release
@@ -110,7 +109,7 @@ jobs:
             ## Commit Message
             ${{ steps.release.outputs.message }}
           files: |
-            ${{ steps.xpi.outputs.file }}
+            ./dist/firefox-dist.xpi
             ./dist/oldchrome-dist.zip
             ./dist/newchrome-dist.zip
         env:
