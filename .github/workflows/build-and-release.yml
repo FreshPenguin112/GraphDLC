@@ -63,7 +63,9 @@ jobs:
         run: bun i
 
       - name: Build
-        run: bun run build
+        run: |
+          bun run build
+          rm -f dist/newchrome/.amo-upload-uuid
 
       - name: Release Firefox
         env:
@@ -76,3 +78,51 @@ jobs:
             --source-dir dist/newchrome \
             --artifacts-dir dist/firefox \
             --channel=unlisted
+
+      - name: Find XPI
+        id: xpi
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          shopt -s nullglob
+          files=(dist/firefox/*."$VERSION".xpi)
+
+          if [[ ${#files[@]} -ne 1 ]]; then
+            echo "Expected exactly one XPI, found ${#files[@]}" >&2
+            exit 1
+          fi
+
+          echo "file=$(realpath "${files[0]}")" >> "$GITHUB_OUTPUT
+
+      - name: Get Release Metadata
+        id: release
+        shell: bash
+        run: |
+          echo "hash=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "subject=$(git log -1 --format=%s)" >> "$GITHUB_OUTPUT"
+          echo "message<<EOF" >> "$GITHUB_OUTPUT"
+          git log -1 --format=%B >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "timestamp=$(date -u "+%Y-%m-%d %H:%M:%S.%N %Z")" >> "$GITHUB_OUTPUT"
+          echo "author=$(git log -1 --format='%an <%ae>')" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release and Upload Raw Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.hash }}
+          name: ${{ steps.release.outputs.hash }}
+          body: |
+            Commit: ${{ steps.release.outputs.subject }}
+
+            Full commit: ${{ steps.release.outputs.hash }}
+            Author: ${{ steps.release.outputs.author }}
+            Created: ${{ steps.release.outputs.timestamp }}
+
+            ## Commit Message
+            ${{ steps.release.outputs.message }}
+          files: |
+            ${{ steps.xpi.outputs.file }}
+            ./dist/oldchrome-dist.zip
+            ./dist/newchrome-dist.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
