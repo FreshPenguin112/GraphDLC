@@ -1,0 +1,43 @@
+import type { GraphNode } from '../GraphNode';
+
+export const enum CycleHeadType {
+    NONE = 0,
+    READ = 1,
+    WRITE = 2,
+    CLEAR = 3,
+    XOR_WRITE = 4,
+}
+
+export interface GraphCycle {
+    index: number;
+    nodes: GraphNode[];
+    heads: GraphNode[];
+    extraNodes: GraphNode[];
+}
+
+export interface ReadHead {
+    node: GraphNode;
+    extraPath: GraphNode[];
+    distance: number;
+}
+
+export interface HeadData {
+    node: GraphNode;
+    headType: CycleHeadType;
+    offset: number;
+    extraPath: GraphNode[];
+}
+
+export interface InternalCycle {
+    key: string;
+    nodes: GraphNode[];
+    graphCycleRef: GraphCycle | null;
+    valid: boolean;
+}
+
+export interface NodeCycleInfo {
+    ref: GraphCycle;
+    headType: CycleHeadType;
+    offset: number;
+    isBody: boolean;
+}

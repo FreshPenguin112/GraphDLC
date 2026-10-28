@@ -1,0 +1,75 @@
+import { BaseSetting } from './BaseSetting';
+import type { SettingMeta } from './Types';
+
+export interface NumberSettingOptions {
+    min: number;
+    max: number;
+    step?: number;
+    inputType?: 'range' | 'number';
+    formatLabel?: (value: number) => string;
+}
+
+export class NumberSetting extends BaseSetting<number> {
+    public readonly min: number;
+    public readonly max: number;
+    public readonly step: number;
+    public readonly inputType: 'range' | 'number';
+    private readonly formatLabel: (value: number) => string;
+
+    public constructor(
+        key: string,
+        defaultValue: boolean | number,
+        meta: SettingMeta,
+        options: NumberSettingOptions,
+        disabled: boolean = false,
+    ) {
+        super(
+            key,
+            typeof defaultValue === 'boolean'
+                ? defaultValue
+                    ? 1
+                    : 0
+                : defaultValue,
+            meta,
+            disabled,
+        );
+
+        this.min = options.min;
+        this.max = options.max;
+        this.step = options.step ?? 1;
+        this.inputType = options.inputType ?? 'range';
+        this.formatLabel = options.formatLabel ?? ((value) => value.toString());
+    }
+
+    public override validate(newValue: number): boolean {
+        return newValue >= this.min && newValue <= this.max;
+    }
+
+    public buildUIComponent(): HTMLDivElement {
+        const container = document.createElement('div');
+        const slider = document.createElement('input');
+        const label = document.createElement('span');
+
+        slider.type = this.inputType;
+        slider.min = this.min.toString();
+        slider.max = this.max.toString();
+        slider.step = this.step.toString();
+        slider.value = this.value.toString();
+        slider.style.display = 'inline';
+        slider.disabled = this.disabled;
+
+        slider.addEventListener('input', () => {
+            const val = parseInt(slider.value, 10);
+            this.value = val;
+            label.innerText = this.formatLabel(this.value);
+            if (this.meta.reloadOnChange) window.location.reload();
+        });
+
+        label.innerText = this.formatLabel(this.value);
+
+        container.appendChild(slider);
+        container.appendChild(label);
+
+        return container;
+    }
+}

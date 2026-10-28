@@ -1,0 +1,370 @@
+import { CycleHeadType } from 'src/core/graph/ast/cycle/types';
+import { removeWithSwap } from 'src/core/utils/removeWithSwap';
+import type { Graph } from '../../ast/Graph';
+import type { GraphNode } from '../../ast/GraphNode';
+import { NodeSignal } from '../core/NodeSignal';
+import { NodeType, NodeTypes } from '../core/NodeType';
+import type { RawGraphState, RawNodeState } from './RawState';
+
+export class RawGraphUpdater {
+    public fullNodeStateCalculate(state: RawGraphState, node: GraphNode) {
+        const nodeState = state.getNode(node.nodeIdx);
+        if (!nodeState) return;
+
+        let signalsCount = 0;
+        let blockedCount = 0;
+
+        const isDetector = node.type === NodeType.DETECTOR;
+
+        if (isDetector) {
+            if (node.detectedLink) {
+                const detectedState = state.getNode(node.detectedLink.nodeIdx);
+                if (detectedState) {
+                    signalsCount =
+                        detectedState.signal !== NodeSignal.NONE ? 1 : 0;
+                }
+            }
+        }
+
+        for (const prev of node.backLinks) {
+            const prevState = state.getNode(prev.nodeIdx);
+            if (!prevState) continue;
+
+            const isBypassedHead =
+                prev.headType !== CycleHeadType.NONE &&
+                prev.headType !== CycleHeadType.READ;
+
+            if (isBypassedHead) continue;
+
+            if (prevState.lastSignal === NodeSignal.ACTIVE) {
+                const isBlocker = prev.type === NodeType.BLOCKER;
+                if (isBlocker && prev.blockedLink === node) {
+                    blockedCount++;
+                } else if (!isDetector) {
+                    signalsCount++;
+                }
+            }
+        }
+
+        nodeState.signalsCount = signalsCount;
+        nodeState.blockedCount = blockedCount;
+        nodeState.isUpdated = true;
+        this.markNodeAsChangedNonTemp(state, nodeState);
+        this.markNodeAsChanged(state, nodeState);
+    }
+
+    public updateState(state: RawGraphState) {
+        for (let i = 0; i < state.changedNodes.length; i++) {
+            const nodeState = state.changedNodes[i];
+            const isActive = nodeState.signal === NodeSignal.ACTIVE;
+            const isChanged = nodeState.lastSignal !== nodeState.signal;
+            const nodeType = nodeState.type;
+            const isBlocker = nodeType === NodeType.BLOCKER;
+            const isCycleHead =
+                nodeState.headType !== CycleHeadType.NONE &&
+                nodeState.headType !== CycleHeadType.READ;
+
+            if (isCycleHead) {
+                if (
+                    !isActive &&
+                    (nodeState.headType !== CycleHeadType.CLEAR ||
+                        nodeState.blockedCount === 0)
+                )
+                    continue;
+
+                const cycleIdx = nodeState.cycleIdx;
+                if (cycleIdx === null) continue;
+
+                const cycleState = state.cycles[cycleIdx];
+                if (!cycleState) continue;
+
+                const cycleHeadType: CycleHeadType = nodeState.headType;
+                switch (cycleHeadType) {
+                    case CycleHeadType.WRITE:
+                        cycleState.writeBit(state.tick, nodeState.cycleOffset);
+                        break;
+                    case CycleHeadType.XOR_WRITE:
+                        cycleState.xorBit(state.tick, nodeState.cycleOffset);
+                        break;
+                    case CycleHeadType.CLEAR:
+                        cycleState.clearBit(state.tick, nodeState.cycleOffset);
+                        break;
+                }
+                this.markNodeAsChanged(state, nodeState);
+                continue;
+            }
+
+            if (isChanged) {
+                const delta = isActive ? 1 : -1;
+                const isDelayed =
+                    (nodeType === NodeType.DELAY &&
+                        nodeState.signal === NodeSignal.PENDING) ||
+                    (!isActive && nodeState.lastSignal === NodeSignal.PENDING);
+
+                const linkedNodes = nodeState.links;
+                const detectorNodes = nodeState.detectorLinks;
+
+                if (!isDelayed) {
+                    for (let i = 0; i < linkedNodes.length; i++) {
+                        const edgeState = linkedNodes[i];
+
+                        if (
+                            isBlocker &&
+                            nodeState.blockedIdx === edgeState.nodeIdx
+                        ) {
+                            edgeState.blockedCount += delta;
+                            this.markNodeAsChanged(state, edgeState);
+                        } else {
+                            edgeState.signalsCount += delta;
+                            this.markNodeAsChanged(state, edgeState);
+                        }
+                    }
+                }
+
+                for (let i = 0; i < detectorNodes.length; i++) {
+                    const detectorState = detectorNodes[i];
+
+                    detectorState.signalsCount =
+                        nodeState.signal !== NodeSignal.NONE ? 1 : 0;
+                    this.markNodeAsChanged(state, detectorState);
+                }
+
+                nodeState.lastSignal = nodeState.signal;
+            }
+
+            if (
+                nodeState.isUpdated ||
+                (isChanged && nodeState.isAdditionalUpdate) ||
+                (state.tick === 0 && nodeState.isEntryPoint) ||
+                (nodeState.signal !== NodeSignal.NONE &&
+                    nodeState.signalsCount === 0 &&
+                    (nodeType === NodeType.BUTTON ||
+                        nodeType === NodeType.DIRECTIONAL_BUTTON)) ||
+                (nodeState.signalsCount > 0 &&
+                    (nodeType === NodeType.RANDOM ||
+                        nodeState.headType === CycleHeadType.READ))
+            ) {
+                nodeState.isUpdated = false;
+                this.markNodeAsChanged(state, nodeState);
+            }
+        }
+
+        const temp = state.changedNodes;
+        state.changedNodes = state.tempChangedNodes;
+        state.tempChangedNodes = temp;
+
+        for (let i = 0; i < state.changedNodes.length; i++) {
+            const nodeState = state.changedNodes[i];
+            nodeState.isChanged = false;
+
+            if (nodeState.blockedCount > 0) {
+                if (nodeState.signal !== NodeSignal.NONE) {
+                    nodeState.signal = NodeSignal.NONE;
+                    state.makeDirtyChunk(nodeState.chunkIdx);
+                }
+            } else {
+                const signal = this.updateNodeSignal(state, nodeState);
+                if (signal !== NodeSignal.KEEP_SIGNAL) {
+                    nodeState.signal = signal;
+                    state.makeDirtyChunk(nodeState.chunkIdx);
+                }
+            }
+        }
+
+        for (let i = 0; i < state.breakPoints.length; i++) {
+            const nodeState = state.getNode(state.breakPoints[i]);
+            if (
+                nodeState.signal === NodeSignal.ACTIVE &&
+                nodeState.lastSignal === NodeSignal.NONE
+            ) {
+                state.breakPoint = true;
+                state.breakPointNode = nodeState.nodeIdx;
+                break;
+            }
+        }
+
+        state.tempChangedNodes.length = 0;
+        state.tick += 1;
+    }
+
+    public markNodeAsChangedNonTemp(
+        state: RawGraphState,
+        nodeState: RawNodeState,
+    ) {
+        state.changedNodes.push(nodeState);
+    }
+
+    public markNodeAsChanged(state: RawGraphState, nodeState: RawNodeState) {
+        if (nodeState.isChanged) return;
+        nodeState.isChanged = true;
+        state.tempChangedNodes.push(nodeState);
+    }
+
+    private updateNodeSignal(
+        state: RawGraphState,
+        nodeState: RawNodeState,
+    ): NodeSignal {
+        if (nodeState.headType === CycleHeadType.READ) {
+            if (nodeState.signalsCount > 1) return NodeSignal.ACTIVE;
+            if (nodeState.signalsCount === 0) return NodeSignal.NONE;
+
+            const cycleIdx = nodeState.cycleIdx;
+            if (cycleIdx === null) return NodeSignal.KEEP_SIGNAL;
+
+            const cycleState = state.cycles[cycleIdx];
+            if (!cycleState) return NodeSignal.KEEP_SIGNAL;
+
+            const cycleActive = cycleState.getBit(
+                state.tick,
+                nodeState.cycleOffset,
+            );
+            return cycleActive ? NodeSignal.ACTIVE : NodeSignal.NONE;
+        }
+        switch (nodeState.type) {
+            case NodeType.PATH:
+            case NodeType.BLOCKER:
+            case NodeType.DETECTOR:
+            case NodeType.DIRECTIONAL_BUTTON:
+                return nodeState.signalsCount > 0
+                    ? NodeSignal.ACTIVE
+                    : NodeSignal.NONE;
+            case NodeType.SOURCE:
+                return NodeSignal.ACTIVE;
+            case NodeType.DELAY:
+                if (nodeState.signal === NodeSignal.PENDING) {
+                    return NodeSignal.ACTIVE;
+                } else if (nodeState.signalsCount > 0) {
+                    if (nodeState.signal === NodeSignal.NONE) {
+                        return NodeSignal.PENDING;
+                    }
+                } else {
+                    return NodeSignal.NONE;
+                }
+                return NodeSignal.KEEP_SIGNAL;
+            case NodeType.IMPULSE:
+                if (nodeState.signal === NodeSignal.NONE)
+                    return NodeSignal.ACTIVE;
+                return NodeSignal.PENDING;
+            case NodeType.LOGIC_NOT:
+                return nodeState.signalsCount === 0
+                    ? NodeSignal.ACTIVE
+                    : NodeSignal.NONE;
+            case NodeType.LOGIC_AND:
+                return nodeState.signalsCount > 1
+                    ? NodeSignal.ACTIVE
+                    : NodeSignal.NONE;
+            case NodeType.LOGIC_XOR:
+                return nodeState.signalsCount % 2 === 1
+                    ? NodeSignal.ACTIVE
+                    : NodeSignal.NONE;
+            case NodeType.LATCH:
+                if (nodeState.signalsCount > 1) return NodeSignal.ACTIVE;
+                else if (nodeState.signalsCount === 1) return NodeSignal.NONE;
+                return NodeSignal.KEEP_SIGNAL;
+            case NodeType.FLIP_FLOP:
+                if (nodeState.signalsCount > 0) {
+                    if (nodeState.signal === NodeSignal.ACTIVE) {
+                        return NodeSignal.NONE;
+                    } else {
+                        return NodeSignal.ACTIVE;
+                    }
+                }
+                return NodeSignal.KEEP_SIGNAL;
+            case NodeType.RANDOM:
+                return nodeState.signalsCount > 0 &&
+                    randomBool(state.seed, nodeState.posHash, state.tick)
+                    ? NodeSignal.ACTIVE
+                    : NodeSignal.NONE;
+            case NodeType.BUTTON:
+                return NodeSignal.NONE;
+            default:
+                return NodeSignal.NONE;
+        }
+    }
+
+    public updateNodeState(
+        graph: Graph,
+        state: RawGraphState,
+        node: GraphNode,
+    ) {
+        const nodeState = state.getNode(node.nodeIdx);
+
+        nodeState.chunkIdx = node.chunkIdx;
+        const localIdx = (node.localY << 4) | node.localX;
+        state.ensureChunkCapacity(node.chunkIdx + 1);
+        const chunk = state.getChunk(node.chunkIdx);
+        if (chunk) {
+            chunk.nodes[localIdx] =
+                node.type === NodeType.EMPTY ? 0xffffffff : node.nodeIdx;
+        }
+        nodeState.posHash = node.posHash;
+        nodeState.type = node.type;
+        nodeState.links = node.links
+            .filter(
+                (linkedNode) =>
+                    linkedNode.type !== NodeType.DETECTOR ||
+                    node.type === NodeType.BLOCKER,
+            )
+            .map((linkedNode) => state.getNode(linkedNode.nodeIdx));
+
+        nodeState.detectorLinks = node.links
+            .filter(
+                (linkedNode) =>
+                    linkedNode.type === NodeType.DETECTOR &&
+                    linkedNode.detectedLink?.nodeIdx === nodeState.nodeIdx,
+            )
+            .map((node) => state.getNode(node.nodeIdx));
+
+        nodeState.isEntryPoint = NodeTypes.isEntryPoint(nodeState.type);
+        nodeState.isAdditionalUpdate = NodeTypes.isAdditionalUpdate(
+            nodeState.type,
+        );
+        if (node.cycleRef) {
+            nodeState.cycleIdx = node.cycleRef.index;
+            nodeState.headType = node.headType;
+            nodeState.cycleOffset = node.cycleOffset;
+        } else {
+            nodeState.cycleIdx = null;
+            nodeState.headType = CycleHeadType.NONE;
+            nodeState.cycleOffset = 0;
+        }
+
+        nodeState.blockedIdx = node.blockedLink
+            ? node.blockedLink.nodeIdx
+            : null;
+
+        const allLinks = new Set<number>([node.nodeIdx]);
+        for (const link of node.links) allLinks.add(link.nodeIdx);
+        for (const link of nodeState.links) allLinks.add(link.nodeIdx);
+
+        for (const n of allLinks) {
+            this.fullNodeStateCalculate(state, graph.getNode(n));
+        }
+    }
+
+    public setNodeBreakpoint(
+        state: RawGraphState,
+        nodeIdx: number,
+        isBreakpoint: boolean,
+    ) {
+        const nodeState = state.getNode(nodeIdx);
+        if (nodeState.isBreakpoint === isBreakpoint) return;
+        nodeState.isBreakpoint = isBreakpoint;
+        removeWithSwap(state.breakPoints, nodeIdx);
+        if (isBreakpoint) {
+            state.breakPoints.push(nodeIdx);
+        }
+    }
+}
+
+function randomBool(seed: number, cellId: number, tick: number): boolean {
+    let x = seed ^ Math.imul(cellId, 0x9e3779b9) ^ Math.imul(tick, 0x85ebca6b);
+
+    x ^= x >>> 16;
+    x = Math.imul(x, 0x21f0aaad);
+    x ^= x >>> 15;
+    x = Math.imul(x, 0x735a2d97);
+    x ^= x >>> 15;
+
+    return x >>> 31 !== 0;
+}

@@ -1,0 +1,52 @@
+export namespace SaveTitleHook {
+    let isHooked: boolean = false;
+    let originalTitle: string | null = null;
+    let _isMapChanged: boolean = false;
+    let state: boolean = false;
+
+    export function isMapChanged(): boolean {
+        return _isMapChanged;
+    }
+
+    export function setIsMapChanged(state: boolean): void {
+        _isMapChanged = state;
+        if (isHooked && originalTitle) {
+            document.title = originalTitle;
+        }
+    }
+
+    export function tryHook(): void {
+        if (isHooked) return;
+        const descriptor = Object.getOwnPropertyDescriptor(
+            Document.prototype,
+            'title',
+        );
+        if (descriptor) {
+            Object.defineProperty(document, 'title', {
+                get() {
+                    return descriptor.get?.call(this) ?? '';
+                },
+                set(val) {
+                    originalTitle = val;
+                    if (state && _isMapChanged) val = `* ${val}`;
+                    descriptor.set?.call(this, val);
+                },
+                configurable: true,
+                enumerable: true,
+            });
+            isHooked = true;
+        }
+    }
+
+    export function tryUnhook() {
+        if (isHooked) {
+            delete (document as any).title;
+            originalTitle = null;
+        }
+    }
+
+    export function setHookState(newState: boolean) {
+        state = newState;
+        if (originalTitle) document.title = originalTitle;
+    }
+}

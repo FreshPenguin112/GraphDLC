@@ -1,0 +1,32 @@
+{
+    "compilerOptions": {
+        "target": "ESNext",
+        "module": "NodeNext",
+        "moduleResolution": "nodenext",
+        "lib": ["DOM", "ES2022"],
+        "strict": true,
+        "strictNullChecks": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true,
+        "sourceMap": true,
+        "outDir": "./dist",
+        "noEmit": false,
+        "esModuleInterop": true,
+        "allowSyntheticDefaultImports": true,
+        "resolveJsonModule": true,
+        "baseUrl": ".",
+        "rootDirs": [".", "logic-arrows/src"],
+        "paths": {
+            "src/*": ["./src/*"],
+            "@logic-arrows/*": ["./logic-arrows/src/*"]
+        }
+    },
+    "include": [
+        "src/**/*",
+        "benchmark/**/*",
+        "rolldown.config.ts",
+        "webpack.config.ts",
+        "webpack/**/*"
+    ],
+    "exclude": ["node_modules", "dist"]
+}
