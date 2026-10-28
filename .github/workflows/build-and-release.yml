@@ -66,4 +66,13 @@ jobs:
         run: bun run build
 
       - name: Release Firefox
-        run: bun run release:firefox
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.WEB_EXT_API_KEY }}
+          WEB_EXT_API_SECRET: ${{ secrets.WEB_EXT_API_SECRET }}
+        run: |
+          node_modules/.bin/web-ext sign \
+            --api-key "$WEB_EXT_API_KEY" \
+            --api-secret "$WEB_EXT_API_SECRET" \
+            --source-dir dist/newchrome \
+            --artifacts-dir dist/firefox \
+            --channel=unlisted
